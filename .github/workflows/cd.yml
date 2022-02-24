@@ -1,0 +1,139 @@
+
+# name: Deploy to AKS Cluster
+# on: push
+
+# env:
+#   docker_image_name: "k8sflask"
+
+# jobs:
+#   build:
+#     runs-on: ubuntu-latest
+#     steps:
+#     - uses: actions/checkout@master
+  
+#     - uses: Azure/docker-login@v1
+#       with:
+#         login-server: hrclabs.azurecr.io
+#         username: ${{ secrets.AZURE_ACR_USERNAME }}
+#         password: ${{ secrets.AZURE_ACR_PASSWORD }}
+  
+#     - run: |
+      
+#         docker build -t "hrclabs.azurecr.io/docker_image_name:${{ github.sha }}" .
+#         docker push "hrclabs.azurecr.io/docker_image_name:${{ github.sha }}"
+  
+#     # Set the target AKS cluster.
+#     - uses: Azure/aks-set-context@v1
+#       with:
+#         creds: '${{ secrets.AZURE_CREDENTIALS }}'
+#         cluster-name: hrc-test-cluster
+#         resource-group: hrc-test-cluster
+
+
+# # Create image pull secret for ACR
+
+#     - uses: Azure/k8s-create-secret@v1
+#       with:
+#         container-registry-url: hrclabs.azurecr.io
+#         container-registry-username: ${{ secrets.AZURE_ACR_USERNAME }}
+#         container-registry-password: ${{ secrets.AZURE_ACR_PASSWORD }}
+#         secret-name: hrclab-se
+#         namespace: dev
+#         arguments: --force true
+#         #secret-name: ${{ secrets.AZURE_SP_SECRET }}
+
+#     - uses: Azure/k8s-deploy@v1
+#       with:
+#         manifests: |
+#           kubernets/deployment.yaml
+       
+#         images: |
+#           hrclabs.azurecr.io/k8sflask:${{ github.sha }}
+#         imagepullsecrets: |
+#           hrclab-se
+#         namespace: dev
+
+
+
+
+
+name: PUSH_IMAGES
+
+on:
+  push:
+    tags:
+      - dev-*
+
+jobs:
+  git_tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_version: ${{ steps.get_tag_version.outputs.version }}
+      branch_name: ${{ steps.branch_name.outputs.branch }}
+    steps:
+      - name: Get the version
+        id: get_tag_version
+        run: echo ::set-output name=version::${GITHUB_REF/refs\/tags\//}
+
+      - name: Check out repository code
+        uses: actions/checkout@v1
+
+      - name: Branch name
+        id: branch_name
+        run: |
+           echo ::set-output name=branch::$(git branch -a --contains tags/${{steps.get_tag_version.outputs.version}} | awk '{print $1}')
+  
+      - name: print branch name
+        run: echo "The branch is ${{ steps.branch_name.outputs.branch }}"
+
+  build:
+    runs-on: ubuntu-latest
+    if: contains(needs.git_tag.outputs.branch_name, '* remotes/origin/development') && contains(needs.git_tag.outputs.tag_version, 'dev-')
+    needs: [git_tag]
+    steps:
+    - name: Check out repository code
+      uses: actions/checkout@v1
+
+    - name: ACR login
+      uses: Azure/docker-login@v1
+      with:
+        login-server: hrclabs.azurecr.io
+        username: ${{ secrets.AZURE_ACR_USERNAME }}
+        password: ${{ secrets.AZURE_ACR_PASSWORD }}
+    
+    - name: build docker images
+      run: |
+        docker build -t "hrclabs.azurecr.io/abcd:${{needs.git_tag.outputs.tag_version}}" .
+        docker push "hrclabs.azurecr.io/abcd:${{needs.git_tag.outputs.tag_version}}"
+
+    - name: Get AKS cluster authentication
+      uses: Azure/aks-set-context@v1
+      with:
+        creds: '${{ secrets.AZURE_CREDENTIALS }}'
+        cluster-name: hrc-test-cluster
+        resource-group: hrc-test-cluster
+
+    - name: Create image pull secret
+      uses: Azure/k8s-create-secret@v1
+      with:
+        container-registry-url: hrclabs.azurecr.io
+        container-registry-username: ${{ secrets.AZURE_ACR_USERNAME }}
+        container-registry-password: ${{ secrets.AZURE_ACR_PASSWORD }}
+        secret-name: hrclab-acr-secret
+        namespace: dev
+        arguments: --force true
+
+    - name: Deploy image
+      uses: Azure/k8s-deploy@v1
+      with:
+        manifests: |
+          kubernetes/deployment.yaml
+          kubernetes/service.yaml
+        images: |
+          hrclabs.azurecr.io/abcd:${{ needs.git_tag.outputs.tag_version }}
+
+        imagepullsecrets: |
+          hrclab-acr-secret
+
+        namespace: dev
+        
